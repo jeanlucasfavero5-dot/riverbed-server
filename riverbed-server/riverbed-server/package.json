@@ -1,0 +1,10 @@
+{
+  "name": "riverbed-warfare-server",
+  "version": "1.0.0",
+  "description": "Servidor do Riverbed Warfare: contas, mensagens, cupons, cartões, clãs, conquistas e ranking",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "test": "node test/smoke.js" },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED",
+  "private": true
+}
