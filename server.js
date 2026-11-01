@@ -38,16 +38,16 @@ const ACH = [ // id, nome, descrição, modo, condição sobre as estatísticas
   ['ow5', 'Duelista', 'Vença 5 partidas online', 'on', s => s.owins >= 5],
   ['ow25', 'Lenda do Rio', 'Vença 25 partidas online', 'on', s => s.owins >= 25],
   ['zb5', 'Sobrevivente', 'Chegue à rodada 5 da Invasão Zumbi', 'off', s => s.zround >= 5],
-  ['zb10', 'Exterminador de Zumbis', 'Vença a Invasão Zumbi', 'off', s => s.zwin >= 1],
+  ['zb10', 'Exterminador de Zumbis', 'Sobreviva até a rodada 10 da Invasão Zumbi', 'off', s => s.zround >= 10],
   ['upg', 'Engenheiro', 'Evolua 5 estruturas', 'off', s => s.upg >= 5]];
 /* o progresso do modo offline é informado pelo cliente: o servidor limita o quanto cada envio pode somar */
 const DELTA_CAP = { kills: 150, built: 40, trained: 60, bombs: 12, trades: 40, ships: 6, matches: 3, wins: 2, upg: 25, zwin: 1, omatches: 3, owins: 2 };
-const MAX_CAP = { lvl: 4, zround: 10 };
+const MAX_CAP = { lvl: 4, zround: 100 };   // a Invasão Zumbi é infinita
 const SCORE_PER_SEND = 600, SCORE_PER_DAY = 4000, BASEKILL_PER_DAY = 10;
 
 /* ===== banco de dados em arquivo JSON (escrita atômica) ===== */
-let db = { v: 1, counter: 0, users: {}, nicks: {}, clans: {}, sessions: {}, credits: {}, month: null, logs: [] };
-function load() { try { db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8'))); if (!db.logs) db.logs = []; } catch (e) { /* primeira execução */ } }
+let db = { v: 1, counter: 0, users: {}, nicks: {}, clans: {}, sessions: {}, credits: {}, month: null };
+function load() { try { db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8'))); } catch (e) { /* primeira execução */ } }
 let dirty = false, timer = null;
 function writeNow() { if (!dirty) return; dirty = false; fs.mkdirSync(DATA_DIR, { recursive: true }); const tmp = FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(db)); fs.renameSync(tmp, FILE); }
 function save() { dirty = true; if (timer) return; timer = setTimeout(() => { timer = null; writeNow(); }, 300); if (timer.unref) timer.unref(); }
@@ -62,12 +62,12 @@ const num = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.floor(+v || 0)));
 const hits = new Map();
 setInterval(() => hits.clear(), 10 * 60e3).unref();
 function limit(req, key, max, win) { // limite de requisições por IP
-  if (process.env.RW_TEST === '1') return;
+  if (process.env.RW_TEST === '1') return; // desligado só nos testes automáticos
   const ip = (TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress, k = key + '|' + ip, t = now();
   const a = (hits.get(k) || []).filter(x => t - x < win); a.push(t); hits.set(k, a);
   if (a.length > max) E('Muitas tentativas. Aguarde um pouco.', 429);
 }
-const fails = new Map();
+const fails = new Map(); // bloqueio por conta após erros de senha
 
 /* ===== contas, mensagens, conquistas ===== */
 function msg(u, m) {
@@ -81,7 +81,7 @@ function checkAch(u) {
 }
 function flagInfluencer(u) {
   for (const [c, n] of Object.entries(INFL)) if (n === u.nick.toLowerCase() && !u.couponCode) { u.isInfluencer = true; u.couponCode = c; }
-  if (u.couponCode && db.credits[u.couponCode]) {
+  if (u.couponCode && db.credits[u.couponCode]) { // diamantes de cupons usados antes de o influenciador existir
     const v = 5 * db.credits[u.couponCode]; delete db.credits[u.couponCode]; u.dia += v;
     msg(u, { t: 'sistema', title: 'Créditos de influenciador', body: 'Você recebeu +' + v + ' 💎 de cupons resgatados.' });
   }
@@ -94,7 +94,7 @@ function newUser(nick, pw) {
   msg(u, { t: 'suporte', title: 'Bem-vindo ao Riverbed Warfare', body: 'Aqui chegam avisos do suporte, confirmações de recarga e compras, validade dos seus cartões e mensagens do seu clã. Seu presente: 50 diamantes!', claim: 50 });
   save(); return u;
 }
-const pub = u => ({ id: u.id, nick: u.nick, dia: u.dia, cartoesMercado: u.cartoesMercado, isInfluencer: u.isInfluencer === true, couponCode: u.couponCode, medalhaRank: u.medalhaRank, score: u.score, monthScore: u.monthScore, stats: u.stats, ach: u.ach, msgs: u.msgs, clanId: u.clanId, redeemed: u.redeemed, promo: u.promo, born: u.born, last: u.last, banned: u.banned, banType: u.banType });
+const pub = u => ({ id: u.id, nick: u.nick, dia: u.dia, cartoesMercado: u.cartoesMercado, isInfluencer: u.isInfluencer === true, couponCode: u.couponCode, medalhaRank: u.medalhaRank, score: u.score, monthScore: u.monthScore, stats: u.stats, ach: u.ach, msgs: u.msgs, clanId: u.clanId, redeemed: u.redeemed, promo: u.promo, born: u.born, last: u.last });
 const card = u => ({ id: u.id, nick: u.nick, clanId: u.clanId, medalhaRank: u.medalhaRank, isInfluencer: u.isInfluencer === true, monthScore: u.monthScore });
 const ok = (u, extra) => Object.assign({ me: pub(u) }, extra || {});
 function checkNick(n) {
@@ -104,7 +104,7 @@ function checkNick(n) {
   if (db.nicks[n.toLowerCase()]) return 'Este nick já está em uso.';
   return '';
 }
-function userMaint(u) {
+function userMaint(u) { // avisa quando um cartão expira
   const t = now();
   for (const k in CARDS) { const e = u.cartoesMercado[k]; if (e && e < t && u.cardNote[k] !== e) { u.cardNote[k] = e; msg(u, { t: 'validade', title: 'Cartão expirado: ' + CARDS[k][0], body: 'O bônus de ' + CARDS[k][1] + ' acabou. Compre outro no Perfil ou no Mercado.' }); save(); } }
 }
@@ -119,7 +119,7 @@ function cleanLogo(l) {
   l = l || {}; return { e: EMOJIS.includes(l.e) ? l.e : EMOJIS[0], a: hsl.test(l.a) ? l.a : 'hsl(120,60%,34%)', b: hsl.test(l.b) ? l.b : 'hsl(150,70%,16%)' };
 }
 
-/* ===== manutenção global ===== */
+/* ===== manutenção global: ranking mensal, dissolução de clãs, líder inativo ===== */
 let lastMaint = 0;
 function maintGlobal(force) {
   const t = now(); if (!force && t - lastMaint < 30000) return; lastMaint = t;
@@ -136,7 +136,7 @@ function maintGlobal(force) {
   for (const c of Object.values(db.clans)) {
     if (c.dis && t >= c.dis) { c.members.forEach(m => { const a = db.users[m.id]; if (a) { a.clanId = null; msg(a, { t: 'clã', title: 'Clã dissolvido', body: 'O clã [' + c.tag + '] ' + c.name + ' foi dissolvido.' }); } }); delete db.clans[c.id]; save(); continue; }
     const ld = db.users[c.leader];
-    if (ld && t - ld.last > 30 * DAY && c.vices.length) {
+    if (ld && t - ld.last > 30 * DAY && c.vices.length) { // 30 dias inativo → vice mais antigo assume
       const nv = [...c.vices].sort((a, b) => a.since - b.since)[0]; c.vices = c.vices.filter(v => v.id !== nv.id); c.leader = nv.id;
       toAll(c, 'Nova liderança', 'O líder ficou 30 dias inativo. A liderança passou ao vice-líder mais antigo.'); save();
     }
@@ -160,14 +160,13 @@ PUBLIC['POST /api/login'] = ({ b, req }) => {
   if (f && f.n >= 8 && now() - f.t < 10 * 60e3) E('Conta bloqueada por 10 minutos após muitas tentativas.', 429);
   const u = db.users[db.nicks[nick]];
   if (!u || !safeEq(hashPw(String(b.pw || ''), u.salt), u.hash)) { fails.set(nick, { n: (f && now() - f.t < 10 * 60e3 ? f.n : 0) + 1, t: now() }); E('Nick ou senha incorretos.', 401); }
-  if (u.banned) E('Esta conta está banida (' + (u.banType || 'Permanente') + ').', 403);
   fails.delete(nick); u.last = now(); userMaint(u); save(); return startSession(u);
 };
 function startSession(u) { const token = crypto.randomBytes(32).toString('hex'); db.sessions[token] = { uid: u.id, exp: now() + 30 * DAY }; save(); return Object.assign({ token }, ok(u)); }
 PRIV['POST /api/logout'] = ({ req }) => { delete db.sessions[tokenOf(req)]; save(); return { ok: true }; };
 PRIV['GET /api/me'] = ({ u }) => ok(u);
 
-PRIV['POST /api/stats'] = ({ u, b }) => {
+PRIV['POST /api/stats'] = ({ u, b }) => { // progresso do modo offline, com limites por envio
   const t = now(); if (u._st && t - u._st < 2000) return ok(u); u._st = t;
   const d = b.d || {}, mx = b.mx || {};
   for (const k in DELTA_CAP) { const v = num(d[k], 0, DELTA_CAP[k]); if (v) u.stats[k] = (u.stats[k] || 0) + v; }
@@ -190,7 +189,7 @@ PRIV['POST /api/claim'] = ({ u, b }) => {
   m.claim.done = true; u.dia += m.claim.n; save(); return ok(u, { toast: '+' + m.claim.n + ' 💎 resgatados!' });
 };
 PRIV['POST /api/msgs/read'] = ({ u }) => { u.msgs.forEach(m => { m.read = true; }); save(); return ok(u); };
-PRIV['POST /api/msgs/clear'] = ({ u }) => { u.msgs = u.msgs.filter(m => m.claim && !m.claim.done); save(); return ok(u); };
+PRIV['POST /api/msgs/clear'] = ({ u }) => { u.msgs = u.msgs.filter(m => m.claim && !m.claim.done); save(); return ok(u); }; // mantém prêmios pendentes
 PRIV['POST /api/redeem'] = ({ u, b, req }) => {
   limit(req, 'redeem', 15, 60e3);
   const code = String(b.code || '').trim().toLowerCase(); if (!code) E('Digite um cupom');
@@ -287,39 +286,8 @@ PRIV['POST /api/clan/leave'] = ({ u }) => {
   c.members = c.members.filter(m => m.id !== u.id); c.vices = c.vices.filter(v => v.id !== u.id); u.clanId = null; save(); return ok(u);
 };
 
-/* ===== NOVAS ROTAS ADMIN CONECTADAS AO PAINEL (v0.0007) ===== */
+/* ----- painel admin (envie o cabeçalho X-Admin-Key) ----- */
 const byNick = n => { const u = db.users[db.nicks[String(n || '').toLowerCase()]]; if (!u) E('Jogador não encontrado', 404); return u; };
-
-ADMIN['GET /api/admin/data'] = () => {
-  return {
-    usuarios: Object.values(db.users),
-    clas: Object.values(db.clans),
-    logs: db.logs || []
-  };
-};
-
-ADMIN['POST /api/admin/update-users'] = ({ b }) => {
-  if (!b.usuarios || !Array.isArray(b.usuarios)) E('Lista de usuários inválida');
-  b.usuarios.forEach(updatedUser => {
-    if (updatedUser.id && db.users[updatedUser.id]) {
-      // Atualiza os campos mantendo a segurança da hash de senha se não for alterada
-      const existing = db.users[updatedUser.id];
-      existing.nick = updatedUser.nick || existing.nick;
-      existing.dia = updatedUser.dia !== undefined ? updatedUser.dia : existing.dia;
-      existing.xp = updatedUser.xp !== undefined ? updatedUser.xp : existing.xp;
-      existing.banned = updatedUser.banned !== undefined ? updatedUser.banned : existing.banned;
-      existing.banType = updatedUser.banType !== undefined ? updatedUser.banType : existing.banType;
-      existing.isInfluencer = updatedUser.isInfluencer !== undefined ? updatedUser.isInfluencer : existing.isInfluencer;
-      existing.couponCode = updatedUser.couponCode !== undefined ? updatedUser.couponCode : existing.couponCode;
-      if (updatedUser.senha && updatedUser.senha.length >= 6) {
-        existing.hash = hashPw(updatedUser.senha, existing.salt);
-      }
-    }
-  });
-  save();
-  return { success: true };
-};
-
 ADMIN['POST /api/admin/influencer'] = ({ b }) => {
   const u = byNick(b.nick), on = b.on !== false;
   u.isInfluencer = on; if (on && b.coupon) { u.couponCode = String(b.coupon).toLowerCase(); flagInfluencer(u); } if (!on) u.couponCode = null;
@@ -339,7 +307,6 @@ function authUser(req) {
   const tk = tokenOf(req), s = tk && db.sessions[tk]; if (!s) return null;
   if (s.exp < now()) { delete db.sessions[tk]; save(); return null; }
   const u = db.users[s.uid]; if (!u) return null;
-  if (u.banned) return null; // rejeita utilizadores banidos
   if (now() - u.last > 5 * 60e3) { u.last = now(); save(); }
   userMaint(u); return u;
 }
@@ -369,11 +336,7 @@ async function onReq(req, res) {
     maintGlobal(); let out;
     if (PUBLIC[key]) out = PUBLIC[key](ctx);
     else if (PRIV[key]) { const u = authUser(req); if (!u) E('Sessão expirada. Entre novamente.', 401); ctx.u = u; out = PRIV[key](ctx); }
-    else if (ADMIN[key]) { 
-      const k = String(req.headers['x-admin-key'] || tokenOf(req) || ''); 
-      if (!ADMIN_KEY || !safeEq(k, ADMIN_KEY)) E('Admin desativado ou chave inválida', 403); 
-      out = ADMIN[key](ctx); 
-    }
+    else if (ADMIN[key]) { const k = String(req.headers['x-admin-key'] || ''); if (!ADMIN_KEY || !safeEq(k, ADMIN_KEY)) E('Admin desativado ou chave inválida', 403); out = ADMIN[key](ctx); }
     else E('Rota não encontrada', 404);
     send(res, 200, out);
   } catch (e) {
@@ -389,4 +352,4 @@ function start(port = PORT) {
   return srv;
 }
 if (require.main === module) start();
-module.exports = { start, state: () => db, maintGlobal, flush: writeNow };
+module.exports = { start, state: () => db, maintGlobal, flush: writeNow }; // usados pelo teste (npm test)

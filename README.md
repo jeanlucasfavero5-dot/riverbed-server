@@ -48,3 +48,24 @@ Regras fixas ficam no topo do `server.js`: `PROMOS` (cupons de teste), `INFL` (c
 - Tudo que vale diamante é decidido no servidor: boas-vindas, missões, cupons, cartões, créditos de influenciador.
 - Ainda **não há partida online em tempo real**: o botão "Modo Online" continua "em breve". Ela precisa de um servidor de partida (WebSocket) que simule o jogo, e é o próximo passo.
 - Recarga com dinheiro real **não está implementada**: o admin pode creditar diamantes (`/api/admin/grant`), o que gera a mensagem de confirmação.
+
+## Cliente do jogo: como ele encontra o servidor
+Ao abrir, o jogo testa `/api/ping` nesta ordem: `?api=URL` (se existir) → mesma origem (quando servido por este servidor) → último endereço que funcionou → **`https://riverbed-server.onrender.com`** (constante `DEFAULT_API` no topo do bloco "Modo servidor" do `index.html`). Login, estatísticas, cupons, cartões e clãs usam esse endereço. No Render gratuito o servidor "dorme": a primeira conexão pode levar até 1 minuto (a tela de login avisa). Sem nenhum servidor, o jogo cai no modo local.
+
+## Painel ao vivo (BroadcastChannel `riverbed_admin_channel`)
+O jogo escuta e responde nesse canal. **Funciona entre abas do mesmo navegador e da mesma origem** (painel e jogo servidos pelo mesmo endereço); não atravessa dispositivos. Os comandos só são executados se o jogo for aberto com `?admin=1` (ou `localStorage.rg_admin = true`).
+
+| `type` | dados | efeito |
+|---|---|---|
+| `ADD_GOLD` | `{amount}` | soma (ou subtrai) ouro |
+| `SPAWN` | `{unit:'soldier'\|'tank'\|'zombie', count}` | soldados e tanques nascem na base; zumbis saem da água |
+| `SET_SPEED` / `SET_DAMAGE` | `{mult, who:'player'\|'enemy'\|'all'}` | multiplicador de velocidade / dano |
+| `GOD_MODE` | `{on}` | base e unidades do jogador não recebem dano |
+| `FOG` | `{on}` | `false` revela o mapa todo; `true` volta a névoa |
+| `PAUSE` | `{on}` | pausa/retoma a partida (mostra faixa "pausado") |
+| `PING` | | o jogo responde `HELLO_ACK` |
+
+Se `on` não vier, o comando alterna. Cada comando recebe uma resposta `{type:'ACK', event, ok, detail}`. A cada segundo de partida o jogo envia `{type:'TELEMETRY', data:{fps, entities, entitiesTotal, units, zombies, gold, mode, round, difficulty, paused, god, fog, ts}}`, onde `entities` é a contagem de unidades e construções **na tela**. Os nomes de evento também aceitam apelidos (`GOLD`, `SPAWN_UNIT`, `TROOP_SPEED`, `GODMODE`, `TOGGLE_FOG`, `TOGGLE_PAUSE`...). Para mudar o formato, edite `AKEYS` e `adminCmd` no `index.html`.
+
+## Se você já alterou o `server.js` no Render (v0.0007)
+A Invasão Zumbi agora é infinita. Para a conquista "Exterminador de Zumbis" e o limite de rodadas continuarem corretos, aplique no seu servidor: `MAX_CAP.zround` de `10` para `100` e a condição da conquista `zb10` para `s.zround >= 10`.
