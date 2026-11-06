@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-/* Riverbed Warfare — servidor (Node.js 18+, com Socket.io).
+/* Riverbed Warfare & Wavecombat Hub — servidor unificado (Node.js 18+, com Socket.io Namespaces).
    Guarda contas, sessões, mensagens, diamantes, cupons, cartões, clãs, conquistas, ranking,
-   Matchmaking Online e Salas Personalizadas em tempo real.
-   Também serve o jogo (pasta public/) para o cliente falar com a API no mesmo endereço. */
+   Matchmaking Online e Salas Personalizadas em tempo real para múltiplos jogos.
+   Também serve os arquivos estáticos da pasta public/. */
 'use strict';
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { Server } = require('socket.io');
@@ -351,92 +351,101 @@ function start(port = PORT) {
   load(); maintGlobal(true);
   const srv = http.createServer(onReq);
   
-  /* ===== INTEGRAÇÃO SOCKET.IO (MATCHMAKING E SALAS) ===== */
+  /* ===== SOCKET.IO COM NAMESPACES PARA MÚLTIPLOS JOGOS ===== */
   const io = new Server(srv, { cors: { origin: '*' } });
-  let matchmakingQueue = [];
-  let customRooms = new Map();
 
-  io.on('connection', (socket) => {
-    // 1. Chat Global
-    socket.on('global_chat', (data) => {
-      io.emit('global_chat', data);
-    });
+  function setupGameNamespace(nsp, gameName) {
+    let matchmakingQueue = [];
+    let customRooms = new Map();
 
-    // 2. Matchmaking Automático (Grupos de 4)
-    socket.on('join_matchmaking', (userData) => {
-      if (!matchmakingQueue.find(p => p.id === socket.id)) {
-        matchmakingQueue.push({ id: socket.id, name: userData.name });
-      }
-      if (matchmakingQueue.length >= 4) {
-        const roomPlayers = matchmakingQueue.splice(0, 4);
-        const matchId = 'MATCH_' + Math.floor(Math.random() * 9000 + 1000);
-        roomPlayers.forEach(p => {
-          const pSocket = io.sockets.sockets.get(p.id);
-          if (pSocket) {
-            pSocket.join(matchId);
-            pSocket.emit('start_game', { matchId, players: roomPlayers });
-          }
-        });
-      }
-    });
+    nsp.on('connection', (socket) => {
+      console.log(`[${gameName}] Jogador conectado: ${socket.id}`);
 
-    socket.on('leave_matchmaking', () => {
-      matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
-    });
-
-    // 3. Salas Personalizadas
-    socket.on('create_custom_room', ({ roomId, pass, maxPlayers, playerName }) => {
-      if (customRooms.has(roomId)) {
-        socket.emit('room_error', 'Esta sala já existe!');
-        return;
-      }
-      customRooms.set(roomId, {
-        pass: pass || '',
-        maxPlayers: maxPlayers || 4,
-        host: socket.id,
-        players: [{ id: socket.id, name: playerName }]
+      // 1. Chat Global do Jogo
+      socket.on('global_chat', (data) => {
+        nsp.emit('global_chat', data);
       });
-      socket.join(roomId);
-      socket.emit('room_joined', { roomId, isHost: true, players: customRooms.get(roomId).players });
+
+      // 2. Matchmaking Automático (Grupos de 4)
+      socket.on('join_matchmaking', (userData) => {
+        if (!matchmakingQueue.find(p => p.id === socket.id)) {
+          matchmakingQueue.push({ id: socket.id, name: userData.name || 'Jogador' });
+        }
+        if (matchmakingQueue.length >= 4) {
+          const roomPlayers = matchmakingQueue.splice(0, 4);
+          const matchId = 'MATCH_' + Math.floor(Math.random() * 9000 + 1000);
+          roomPlayers.forEach(p => {
+            const pSocket = nsp.sockets.get(p.id);
+            if (pSocket) {
+              pSocket.join(matchId);
+              pSocket.emit('start_game', { matchId, players: roomPlayers });
+            }
+          });
+        }
+      });
+
+      socket.on('leave_matchmaking', () => {
+        matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
+      });
+
+      // 3. Salas Personalizadas com Senha
+      socket.on('create_custom_room', ({ roomId, pass, maxPlayers, playerName }) => {
+        if (customRooms.has(roomId)) {
+          socket.emit('room_error', 'Esta sala já existe!');
+          return;
+        }
+        customRooms.set(roomId, {
+          pass: pass || '',
+          maxPlayers: maxPlayers || 4,
+          host: socket.id,
+          players: [{ id: socket.id, name: playerName || 'Líder' }]
+        });
+        socket.join(roomId);
+        socket.emit('room_joined', { roomId, isHost: true, players: customRooms.get(roomId).players });
+      });
+
+      socket.on('join_custom_room', ({ roomId, pass, playerName }) => {
+        const room = customRooms.get(roomId);
+        if (!room) {
+          socket.emit('room_error', 'Sala não encontrada!');
+          return;
+        }
+        if (room.pass && room.pass !== pass) {
+          socket.emit('room_error', 'Senha incorreta!');
+          return;
+        }
+        if (room.players.length >= room.maxPlayers) {
+          socket.emit('room_error', 'A sala está cheia!');
+          return;
+        }
+        room.players.push({ id: socket.id, name: playerName || 'Convidado' });
+        socket.join(roomId);
+
+        nsp.to(roomId).emit('update_room_players', { players: room.players });
+
+        if (room.players.length === room.maxPlayers) {
+          nsp.to(roomId).emit('start_game', { matchId: roomId, players: room.players });
+        }
+      });
+
+      socket.on('room_chat', ({ roomId, message, sender }) => {
+        nsp.to(roomId).emit('room_chat', { message, sender });
+      });
+
+      socket.on('disconnect', () => {
+        matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
+      });
     });
+  }
 
-    socket.on('join_custom_room', ({ roomId, pass, playerName }) => {
-      const room = customRooms.get(roomId);
-      if (!room) {
-        socket.emit('room_error', 'Sala não encontrada!');
-        return;
-      }
-      if (room.pass && room.pass !== pass) {
-        socket.emit('room_error', 'Senha incorreta!');
-        return;
-      }
-      if (room.players.length >= room.maxPlayers) {
-        socket.emit('room_error', 'A sala está cheia!');
-        return;
-      }
-      room.players.push({ id: socket.id, name: playerName });
-      socket.join(roomId);
+  // Configurando os canais isolados para cada jogo no mesmo servidor:
+  setupGameNamespace(io.of('/riverbed'), 'Riverbed Warfare');
+  setupGameNamespace(io.of('/wavecombat'), 'Wavecombat Hub');
 
-      io.to(roomId).emit('update_room_players', { players: room.players });
-
-      if (room.players.length === room.maxPlayers) {
-        io.to(roomId).emit('start_game', { matchId: roomId, players: room.players });
-      }
-    });
-
-    socket.on('room_chat', ({ roomId, message, sender }) => {
-      io.to(roomId).emit('room_chat', { message, sender });
-    });
-
-    socket.on('disconnect', () => {
-      matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
-    });
-  });
-
-  srv.listen(port, HOST, () => console.log('Riverbed Warfare: servidor em http://localhost:' + srv.address().port + ' (dados em ' + DATA_DIR + ')' + (ADMIN_KEY ? '' : ' · admin desativado (defina ADMIN_KEY)')));
+  srv.listen(port, HOST, () => console.log('Servidor unificado rodando em http://localhost:' + srv.address().port + ' (dados em ' + DATA_DIR + ')'));
   const bye = () => { writeNow(); process.exit(0); }; process.on('SIGINT', bye); process.on('SIGTERM', bye);
   return srv;
 }
 
 if (require.main === module) start();
-module.exports = { start, state: () => db, maintGlobal, flush: writeNow }; // usados pelo teste (npm test)
+module.exports = { start, state: () => db, maintGlobal, flush: writeNow };
