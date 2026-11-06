@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-/* Riverbed Warfare — servidor (Node.js 18+, sem dependências).
-   Guarda contas, sessões, mensagens, diamantes, cupons, cartões, clãs, conquistas e ranking.
+/* Riverbed Warfare — servidor (Node.js 18+, com Socket.io).
+   Guarda contas, sessões, mensagens, diamantes, cupons, cartões, clãs, conquistas, ranking,
+   Matchmaking Online e Salas Personalizadas em tempo real.
    Também serve o jogo (pasta public/) para o cliente falar com a API no mesmo endereço. */
 'use strict';
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const { Server } = require('socket.io');
 
 /* ===== configuração (variáveis de ambiente) ===== */
 const PORT = process.env.PORT === undefined ? 3000 : +process.env.PORT;
@@ -344,12 +346,97 @@ async function onReq(req, res) {
     console.error(e); send(res, 500, { err: 'Erro interno do servidor' });
   }
 }
+
 function start(port = PORT) {
   load(); maintGlobal(true);
   const srv = http.createServer(onReq);
+  
+  /* ===== INTEGRAÇÃO SOCKET.IO (MATCHMAKING E SALAS) ===== */
+  const io = new Server(srv, { cors: { origin: '*' } });
+  let matchmakingQueue = [];
+  let customRooms = new Map();
+
+  io.on('connection', (socket) => {
+    // 1. Chat Global
+    socket.on('global_chat', (data) => {
+      io.emit('global_chat', data);
+    });
+
+    // 2. Matchmaking Automático (Grupos de 4)
+    socket.on('join_matchmaking', (userData) => {
+      if (!matchmakingQueue.find(p => p.id === socket.id)) {
+        matchmakingQueue.push({ id: socket.id, name: userData.name });
+      }
+      if (matchmakingQueue.length >= 4) {
+        const roomPlayers = matchmakingQueue.splice(0, 4);
+        const matchId = 'MATCH_' + Math.floor(Math.random() * 9000 + 1000);
+        roomPlayers.forEach(p => {
+          const pSocket = io.sockets.sockets.get(p.id);
+          if (pSocket) {
+            pSocket.join(matchId);
+            pSocket.emit('start_game', { matchId, players: roomPlayers });
+          }
+        });
+      }
+    });
+
+    socket.on('leave_matchmaking', () => {
+      matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
+    });
+
+    // 3. Salas Personalizadas
+    socket.on('create_custom_room', ({ roomId, pass, maxPlayers, playerName }) => {
+      if (customRooms.has(roomId)) {
+        socket.emit('room_error', 'Esta sala já existe!');
+        return;
+      }
+      customRooms.set(roomId, {
+        pass: pass || '',
+        maxPlayers: maxPlayers || 4,
+        host: socket.id,
+        players: [{ id: socket.id, name: playerName }]
+      });
+      socket.join(roomId);
+      socket.emit('room_joined', { roomId, isHost: true, players: customRooms.get(roomId).players });
+    });
+
+    socket.on('join_custom_room', ({ roomId, pass, playerName }) => {
+      const room = customRooms.get(roomId);
+      if (!room) {
+        socket.emit('room_error', 'Sala não encontrada!');
+        return;
+      }
+      if (room.pass && room.pass !== pass) {
+        socket.emit('room_error', 'Senha incorreta!');
+        return;
+      }
+      if (room.players.length >= room.maxPlayers) {
+        socket.emit('room_error', 'A sala está cheia!');
+        return;
+      }
+      room.players.push({ id: socket.id, name: playerName });
+      socket.join(roomId);
+
+      io.to(roomId).emit('update_room_players', { players: room.players });
+
+      if (room.players.length === room.maxPlayers) {
+        io.to(roomId).emit('start_game', { matchId: roomId, players: room.players });
+      }
+    });
+
+    socket.on('room_chat', ({ roomId, message, sender }) => {
+      io.to(roomId).emit('room_chat', { message, sender });
+    });
+
+    socket.on('disconnect', () => {
+      matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
+    });
+  });
+
   srv.listen(port, HOST, () => console.log('Riverbed Warfare: servidor em http://localhost:' + srv.address().port + ' (dados em ' + DATA_DIR + ')' + (ADMIN_KEY ? '' : ' · admin desativado (defina ADMIN_KEY)')));
   const bye = () => { writeNow(); process.exit(0); }; process.on('SIGINT', bye); process.on('SIGTERM', bye);
   return srv;
 }
+
 if (require.main === module) start();
 module.exports = { start, state: () => db, maintGlobal, flush: writeNow }; // usados pelo teste (npm test)
